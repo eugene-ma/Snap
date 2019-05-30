@@ -68,38 +68,45 @@
     indentation indicating inheritance. Refer to this list to get a
     contextual overview:
 
+    Symbol key:
+        "+" means "added"
+        "-" means "changed"
+        "~" means "changed with a few things yet to change"
+
     Animation
     Color
     Node
-        Morph
-            BlinkerMorph
-                CursorMorph
-            BouncerMorph*
-            BoxMorph
-                InspectorMorph
-                MenuMorph
-                MouseSensorMorph*
-                SpeechBubbleMorph
-            CircleBoxMorph
-                SliderButtonMorph
-                SliderMorph
-            ColorPaletteMorph
-                GrayPaletteMorph
-            ColorPickerMorph
-            DialMorph
-            FrameMorph
-                ScrollFrameMorph
-                    ListMorph
-                StringFieldMorph
-                WorldMorph
-            HandleMorph
-            HandMorph
-            PenMorph
-            ShadowMorph
-            StringMorph
-            TextMorph
-            TriggerMorph
-                MenuItemMorph
+        ~ Morph
+            + DelegatedDrawingMorph
+            + MultiStateMorph
+                - HandleMorph
+                - SliderButtonMorph
+                - TriggerMorph
+                    - MenuItemMorph
+            - BlinkerMorph
+                - CursorMorph
+            - BouncerMorph*
+            - BoxMorph
+                - InspectorMorph
+                ~ MenuMorph
+                - MouseSensorMorph*
+                - SpeechBubbleMorph
+            - CircleBoxMorph
+                - SliderMorph
+            - ColorPaletteMorph
+                - GrayPaletteMorph
+            - ColorPickerMorph
+            - DialMorph
+            - FrameMorph
+                - ScrollFrameMorph
+                    ~ ListMorph
+                - StringFieldMorph
+                - WorldMorph
+            - HandMorph
+            - PenMorph
+            ~ ShadowMorph
+            - StringMorph
+            - TextMorph
     Point
     Rectangle
 

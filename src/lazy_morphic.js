@@ -2881,7 +2881,7 @@ LazyImageContainer.prototype.init = function (extent, delegate) {
     // See the image() method to see when it is used.
     this.delegate = delegate || null;
     this._image = null; // cached image
-    this._isDirty = true;   // dirty flag
+    this._isDirty = true;   // dirty flag: start out dirty to force first draw
 };
 
 // LazyImageContainer string representation:
@@ -3019,7 +3019,7 @@ Morph.prototype.shadowBlur = 4;
 // Morph instance creation:
 
 function Morph() {
-    this.init();
+    this.init(true);
 }
 
 // Morph initialization:
@@ -3427,6 +3427,12 @@ Morph.prototype.setColor = function (aColor) {
 
 // Morph displaying:
 
+// "Dirty" means either layout or image needs to change
+// (what was previously done all in drawNew()).
+// For now, this also does greedy morph object state updates
+// (and layout changes) that had been done in drawNew().
+// TODO: Separate morph object state updates, layout, and image
+// functionalities into separate code.
 Morph.prototype.setIsDirty = function () {
     // Get notified that you have to redraw (or resize) this morph's image.
     // Override if you don't want the following default behavior.
@@ -3470,31 +3476,38 @@ Morph.prototype.setImage = function (image) {
     if (!this.lazyImageContainer) {
         this.lazyImageContainer = new LazyImageContainer(this.extent(), this);
     }
-    return this.lazyImageContainer.setImage(image);
+    this.lazyImageContainer.setImage(image);
 };
 
 // Delegate protocol for LazyImageContainer:
 Morph.prototype.forLazyImageContainerDoDraw = function (
-    lazyImageContainer, canvas)
-{
+    lazyImageContainer, canvas
+) {
     // Do the drawing for the LazyImageContainer.
     if (lazyImageContainer === this.lazyImageContainer) {
-        var context = canvas.getContext('2d');
-        context.fillStyle = this.color.toString();
-        context.fillRect(0, 0, this.width(), this.height());
-        if (this.cachedTexture) {
-            this.drawCachedTexture();
-        } else if (this.texture) {
-            this.drawTexture(this.texture);
-        }
+        this.draw(canvas);
     }
 };
 
-// Deprecated: Instead, use setIsDirty(), getImageCanvas(), and getImage()
-// to draw lazily. (You may also use setImage().)
+Morph.prototype.draw = function (canvas) {
+    // The method you should override in a subclass to change what is drawn.
+    // Don't call this directly: the system will call it lazily
+    // when it needs to redraw its image.
+    // Override if you don't want the following default behavior.
+    var context = canvas.getContext('2d');
+    context.fillStyle = this.color.toString();
+    context.fillRect(0, 0, this.width(), this.height());
+    if (this.cachedTexture) {
+        this.drawCachedTexture();
+    } else if (this.texture) {
+        this.drawTexture(this.texture);
+    }
+};
+
+// Deprecated: Instead, use setIsDirty(), getImageCanvas(), getImage(),
+// and draw() to draw lazily. (You may also use setImage().)
 Morph.prototype.drawNew = function () {
-    this.setIsDirty();
-    this.image = this.getImage();
+    throw new Error('drawNew() is deprecated in Morph');
 };
 
 Morph.prototype.drawTexture = function (url) {
@@ -4221,7 +4234,7 @@ Morph.prototype.prompt = function (
             slider.action = function (num) {
                 entryField.changed();
                 entryField.text.text = Math.round(num).toString();
-                entryField.text.drawNew();
+                entryField.text.setIsDirty();
                 entryField.text.changed();
                 entryField.text.edit();
             };
@@ -4229,7 +4242,7 @@ Morph.prototype.prompt = function (
             slider.action = function (num) {
                 entryField.changed();
                 entryField.text.text = num.toString();
-                entryField.text.drawNew();
+                entryField.text.setIsDirty();
                 entryField.text.changed();
             };
         }
@@ -4597,7 +4610,7 @@ Morph.prototype.evaluateString = function (code) {
 
     try {
         result = eval(code);
-        this.drawNew();
+        this.setIsDirty();
         this.changed();
     } catch (err) {
         this.inform(err);
@@ -4652,7 +4665,7 @@ Morph.prototype.overlappingImage = function (otherMorph) {
 // I am a temporary Morph class for Morph subclasses to inherit from
 // so that they do not break while we transition to the new Morph class
 // that uses lazy image redrawing. (The old way of redrawing
-// is immediately do it with drawNew() whenever a property is changed.)
+// is to immediately do it with drawNew() whenever a property is changed.)
 
 // OldMorph inherits from Morph:
 
@@ -4662,29 +4675,33 @@ OldMorph.uber = Morph.prototype;
 
 // OldMorph instance creation:
 
-function OldMorph() {
-    this.init();
+function OldMorph(noDraw) {
+    this.init(noDraw);
 }
 
-OldMorph.prototype.init = function () {
-    OldMorph.uber.init.call(this);
+OldMorph.prototype.init = function (noDraw) {
+    OldMorph.uber.init.call(this, noDraw);
 };
 
 // OldMorph displaying:
 
+// Override
 OldMorph.prototype.setIsDirty = function () {
     this.drawNew();
 };
 
+// Override
 OldMorph.prototype.getImageCanvas = function () {
     return this.image;
 };
 
+// Override
 OldMorph.prototype.getImage = function () {
     return this.image;
 };
 
-Morph.prototype.setImage = function (image) {
+// Override
+OldMorph.prototype.setImage = function (image) {
     this.image = image;
 };
 
@@ -4713,22 +4730,135 @@ ShadowMorph.uber = OldMorph.prototype;
 // ShadowMorph instance creation:
 
 function ShadowMorph() {
-    this.init();
+    this.init(true);
 }
 
 ShadowMorph.prototype.topMorphAt = function () {
     return null;
 };
 
+// DelegatedDrawingMorph ///////////////////////////////////////////////////
+
+// I delegate draw() to my delegate instead of doing it myself.
+
+// DelegatedDrawingMorph inherits from Morph:
+
+DelegatedDrawingMorph.prototype = new Morph();
+DelegatedDrawingMorph.prototype.constructor = DelegatedDrawingMorph;
+DelegatedDrawingMorph.uber = Morph.prototype;
+
+// DelegatedDrawingMorph instance creation:
+
+function DelegatedDrawingMorph(delegate) {
+    this.init(true, delegate);
+}
+
+DelegatedDrawingMorph.prototype.init = function (noDraw, delegate) {
+    DelegatedDrawingMorph.uber.init.call(this, noDraw);
+
+    this.delegate = delegate || null;
+};
+
+// Override
+DelegatedDrawingMorph.prototype.draw = function (canvas) {
+    if (this.delegate && 'forDelegatedDrawingMorphDoDraw' in this.delegate) {
+        this.delegate.forDelegatedDrawingMorphDoDraw(this, canvas);
+    } else {
+        DelegatedDrawingMorph.uber.draw.call(this, canvas);
+    }
+};
+
+// MultiStateMorph /////////////////////////////////////////////////////////
+
+// I contain other morphs as my content and automatically switch between them
+// when my current state changes. The morph associated with the current state
+// is shown, and all other morphs are hidden.
+
+// MultiStateMorph inherits from Morph:
+
+MultiStateMorph.prototype = new Morph();
+MultiStateMorph.prototype.constructor = MultiStateMorph;
+MultiStateMorph.uber = Morph.prototype;
+
+// MultiStateMorph instance creation:
+
+function MultiStateMorph() {
+    this.init(true);
+}
+
+MultiStateMorph.prototype.init = function (noDraw) {
+    this._stateMorphs = [];
+    this._state = 0;
+
+    MultiStateMorph.uber.init.call(this, noDraw);
+};
+
+// MultiStateMorph state morphs:
+
+MultiStateMorph.prototype._updateStateMorphVisibility = function (
+    stateMorph, index)
+{
+    if (index === this._state) {
+        stateMorph.show();
+    } else {
+        stateMorph.hide();
+    }
+};
+
+MultiStateMorph.prototype.addStateMorph = function (stateMorph) {
+    this._stateMorphs.push(stateMorph);
+    this.add(stateMorph);
+
+    this.setIsDirty();  // For layout
+
+    this._updateStateMorphVisibility(stateMorph, this._stateMorphs.length - 1);
+};
+
+MultiStateMorph.prototype.getStateMorph = function (index) {
+    return this._stateMorphs[index];
+};
+
+MultiStateMorph.prototype.setState = function (state) {
+    var oldState;
+
+    if (this._state !== state) {
+        oldState = this._state;
+        this._state = state;
+        this._updateStateMorphVisibility(
+            this._stateMorphs[oldState], oldState);
+        this._updateStateMorphVisibility(
+            this._stateMorphs[this._state], this._state);
+    }
+};
+
+MultiStateMorph.prototype.getState = function () {
+    return this._state;
+};
+
+// MultiStateMorph displaying:
+
+// Override
+MultiStateMorph.prototype.setIsDirty = function () {
+    MultiStateMorph.uber.setIsDirty.call(this);
+
+    var myself = this;
+
+    // TODO: Do this lazily.
+    this._stateMorphs.forEach(function (stateMorph) {
+        stateMorph.setPosition(myself.position());
+        stateMorph.setExtent(myself.extent());
+    });
+};
+
 // HandleMorph ////////////////////////////////////////////////////////
 
 // I am a resize / move handle that can be attached to any Morph
 
-// HandleMorph inherits from Morph:
+// HandleMorph inherits from MultiStateMorph:
 
-HandleMorph.prototype = new OldMorph();
+HandleMorph.prototype = new MultiStateMorph();
 HandleMorph.prototype.constructor = HandleMorph;
-HandleMorph.uber = OldMorph.prototype;
+HandleMorph.uber = MultiStateMorph.prototype;
 
 // HandleMorph instance creation:
 
@@ -4750,7 +4880,16 @@ HandleMorph.prototype.init = function (
     this.minExtent = new Point(minX || 0, minY || 0);
     this.inset = new Point(insetX || 0, insetY || insetX || 0);
     this.type =  type || 'resize'; // also: 'move', 'moveCenter', 'movePivot'
-    HandleMorph.uber.init.call(this);
+    HandleMorph.uber.init.call(this, true);
+
+    this.normalContentMorph = new DelegatedDrawingMorph(this);
+    this.normalContentMorph.isDraggable = false;
+    this.addStateMorph(this.normalContentMorph);
+
+    this.highlightContentMorph = new DelegatedDrawingMorph(this);
+    this.highlightContentMorph.isDraggable = false;
+    this.addStateMorph(this.highlightContentMorph);
+
     this.color = new Color(255, 255, 255);
     this.isDraggable = false;
     this.noticesTransparentClick = true;
@@ -4762,25 +4901,15 @@ HandleMorph.prototype.init = function (
 
 // HandleMorph drawing:
 
-HandleMorph.prototype.drawNew = function () {
-    this.normalImage = newCanvas(this.extent());
-    this.highlightImage = newCanvas(this.extent());
-    if (this.type === 'movePivot') {
-        this.drawCrosshairsOnCanvas(this.normalImage, 0.6);
-        this.drawCrosshairsOnCanvas(this.highlightImage, 0.5);
-    } else {
-        this.drawOnCanvas(
-            this.normalImage,
-            this.color,
-            new Color(100, 100, 100)
-        );
-        this.drawOnCanvas(
-            this.highlightImage,
-            new Color(100, 100, 255),
-            new Color(255, 255, 255)
-        );
-    }
-    this.image = this.normalImage;
+// Override
+HandleMorph.prototype.setIsDirty = function () {
+    HandleMorph.uber.setIsDirty.call(this);
+
+    // TODO: May want to try to be lazy about this:
+    this._updatePropertiesForHandleMorph();
+};
+
+HandleMorph.prototype._updatePropertiesForHandleMorph = function () {
     if (this.target) {
         if (this.type === 'moveCenter') {
             this.setCenter(this.target.center());
@@ -4798,7 +4927,53 @@ HandleMorph.prototype.drawNew = function () {
     }
 };
 
-HandleMorph.prototype.drawCrosshairsOnCanvas = function (aCanvas, fract) {
+// Override
+HandleMorph.prototype.draw = function (canvas) {
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+};
+
+// HandleMorph content morphs drawing:
+
+// Delegate for DelegatedDrawingMorph:
+HandleMorph.prototype.forDelegatedDrawingMorphDoDraw = function (
+    delegatedDrawingMorph, canvas
+) {
+    if (delegatedDrawingMorph === this.normalContentMorph) {
+        this.drawForContentMorph(canvas, 'normal');
+    } else if (delegatedDrawingMorph === this.highlightContentMorph) {
+        this.drawForContentMorph(canvas, 'highlight');
+    }
+};
+
+HandleMorph.prototype.drawForContentMorph = function (canvas, mode) {
+    var fract, color, shadowColor;
+
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+
+    if (mode === 'highlight') {
+        fract = 0.5;
+        color = new Color(100, 100, 255);
+        shadowColor = new Color(255, 255, 255);
+    } else {    // 'normal'
+        fract = 0.6;
+        color = this.color;
+        shadowColor = new Color(100, 100, 100);
+    }
+
+    if (this.type === 'movePivot') {
+        this.drawCrosshairsOnCanvas(canvas, fract);
+    } else {
+        this.drawOnCanvas(
+            canvas,
+            color,
+            shadowColor
+        );
+    }
+};
+
+HandleMorph.prototype.drawCrosshairsOnCanvas = function (
+    aCanvas, fract
+) {
     var ctx = aCanvas.getContext('2d'),
         r = aCanvas.width / 2;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
@@ -4972,12 +5147,12 @@ HandleMorph.prototype.rootForGrab = function () {
 // HandleMorph events:
 
 HandleMorph.prototype.mouseEnter = function () {
-    this.image = this.highlightImage;
+    this.setState(1);   // highlight state
     this.changed();
 };
 
 HandleMorph.prototype.mouseLeave = function () {
-    this.image = this.normalImage;
+    this.setState(0);   // normal state
     this.changed();
 };
 
@@ -4992,7 +5167,8 @@ HandleMorph.prototype.attach = function () {
         menu.addItem(each.toString().slice(0, 50), function () {
             myself.isDraggable = false;
             myself.target = each;
-            myself.drawNew();
+            // Was originally drawNew(). TODO: This change right?
+            myself.setIsDirty();
             myself.noticesTransparentClick = true;
         });
     });
@@ -5011,9 +5187,9 @@ var PenMorph;
 
 // PenMorph inherits from Morph:
 
-PenMorph.prototype = new OldMorph();
+PenMorph.prototype = new Morph();
 PenMorph.prototype.constructor = PenMorph;
-PenMorph.uber = OldMorph.prototype;
+PenMorph.uber = Morph.prototype;
 
 // PenMorph instance creation:
 
@@ -5033,7 +5209,7 @@ PenMorph.prototype.init = function () {
     this.penPoint = 'tip'; // or 'center"
     this.penBounds = null; // rect around the visible arrow shape
 
-    HandleMorph.uber.init.call(this);
+    PenMorph.uber.init.call(this, true);
     this.setExtent(new Point(size, size));
 };
 
@@ -5053,19 +5229,28 @@ PenMorph.prototype.changed = function () {
 
 // PenMorph display:
 
-PenMorph.prototype.drawNew = function (facing) {
+// Override
+PenMorph.prototype.setIsDirty = function () {
+    PenMorph.uber.setIsDirty.call(this);
+
+    // TODO: Try to be lazy about this?
+    this._updatePropertiesForPenMorph();
+};
+
+PenMorph.prototype._updatePropertiesForPenMorph = function (facing) {
     // my orientation can be overridden with the "facing" parameter to
     // implement Scratch-style rotation styles
 
-    var context, start, dest, left, right, len,
+    // Note: "facing" was param of drawNew().
+    // TODO: Find better place to pass in?
+
+    // TODO: This code originally came from the old drawNew() method
+    // and is also duplicated in the lazy drawing method.
+    // So maybe find a way to avoid this code duplication.
+
+    var start, dest, left, right, len,
         direction = facing || this.heading;
 
-    if (this.isWarped) {
-        this.wantsRedraw = true;
-        return;
-    }
-    this.image = newCanvas(this.extent());
-    context = this.image.getContext('2d');
     len = this.width() / 2;
     start = this.center().subtract(this.bounds.origin);
 
@@ -5086,6 +5271,41 @@ PenMorph.prototype.drawNew = function (facing) {
         Math.max(start.x, dest.x, left.x, right.x),
         Math.max(start.y, dest.y, left.y, right.y)
     );
+};
+
+// Override
+PenMorph.prototype.draw = function (canvas) {
+    this._drawForPenMorph(canvas);
+};
+
+PenMorph.prototype._drawForPenMorph = function (canvas, facing) {
+    // my orientation can be overridden with the "facing" parameter to
+    // implement Scratch-style rotation styles
+
+    // Note: "facing" was param of drawNew().
+    // TODO: Find better place to pass in?
+
+    var context, start, dest, left, right, len,
+        direction = facing || this.heading;
+
+    if (this.isWarped) {
+        this.wantsRedraw = true;
+        return;
+    }
+    context = canvas.getContext('2d');
+
+    len = this.width() / 2;
+    start = this.center().subtract(this.bounds.origin);
+
+    if (this.penPoint === 'tip') {
+        dest = start.distanceAngle(len * 0.75, direction - 180);
+        left = start.distanceAngle(len, direction + 195);
+        right = start.distanceAngle(len, direction - 195);
+    } else { // 'middle'
+        dest = start.distanceAngle(len * 0.75, direction);
+        left = start.distanceAngle(len * 0.33, direction + 230);
+        right = start.distanceAngle(len * 0.33, direction - 230);
+    }
 
     // draw arrow shape
     context.fillStyle = this.color.toString();
@@ -5110,7 +5330,7 @@ PenMorph.prototype.drawNew = function (facing) {
 
 PenMorph.prototype.setHeading = function (degrees) {
     this.heading = ((+degrees % 360) + 360) % 360;
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -5216,7 +5436,7 @@ PenMorph.prototype.up = function () {
 };
 
 PenMorph.prototype.clear = function () {
-    this.parent.drawNew();
+    this.parent.setIsDirty();
     this.parent.changed();
 };
 
@@ -5230,7 +5450,7 @@ PenMorph.prototype.startWarp = function () {
 PenMorph.prototype.endWarp = function () {
     this.isWarped = false;
     if (this.wantsRedraw) {
-        this.drawNew();
+        this.setIsDirty();
         this.wantsRedraw = false;
     }
     this.parent.changed();
@@ -5289,9 +5509,9 @@ var ColorPaletteMorph;
 
 // ColorPaletteMorph inherits from Morph:
 
-ColorPaletteMorph.prototype = new OldMorph();
+ColorPaletteMorph.prototype = new Morph();
 ColorPaletteMorph.prototype.constructor = ColorPaletteMorph;
-ColorPaletteMorph.uber = OldMorph.prototype;
+ColorPaletteMorph.uber = Morph.prototype;
 
 // ColorPaletteMorph instance creation:
 
@@ -5303,21 +5523,37 @@ function ColorPaletteMorph(target, sizePoint) {
 }
 
 ColorPaletteMorph.prototype.init = function (target, size) {
-    ColorPaletteMorph.uber.init.call(this);
+    ColorPaletteMorph.uber.init.call(this, true);
     this.target = target;
     this.targetSetter = 'color';
     this.silentSetExtent(size);
     this.choice = null;
-    this.drawNew();
+    this.setIsDirty();
 };
 
-ColorPaletteMorph.prototype.drawNew = function () {
+// ColorPaletteMorph displaying:
+
+// Override
+ColorPaletteMorph.prototype.setIsDirty = function () {
+    ColorPaletteMorph.uber.setIsDirty.call(this);
+
+    // TODO: Try to be lazy about this?
+    this._updatePropertiesForColorPaletteMorph();
+};
+
+ColorPaletteMorph.prototype._updatePropertiesForColorPaletteMorph =
+    function ()
+{
+    this.choice = new Color();
+};
+
+// Override
+ColorPaletteMorph.prototype.draw = function (canvas) {
     var context, ext, x, y, h, l;
 
     ext = this.extent();
-    this.image = newCanvas(this.extent());
-    context = this.image.getContext('2d');
-    this.choice = new Color();
+    context = canvas.getContext('2d');
+
     for (x = 0; x <= ext.x; x += 1) {
         h = 360 * x / ext.x;
         for (y = 0; y <= ext.y; y += 1) {
@@ -5327,6 +5563,8 @@ ColorPaletteMorph.prototype.drawNew = function () {
         }
     }
 };
+
+// ColorPaletteMorph other methods:
 
 ColorPaletteMorph.prototype.mouseMove = function (pos) {
     this.choice = this.getPixelColor(pos);
@@ -5344,7 +5582,7 @@ ColorPaletteMorph.prototype.updateTarget = function () {
             this.target[this.targetSetter](this.choice);
         } else {
             this.target[this.targetSetter] = this.choice;
-            this.target.drawNew();
+            this.target.setIsDirty();
             this.target.changed();
         }
     }
@@ -5420,13 +5658,14 @@ function GrayPaletteMorph(target, sizePoint) {
     );
 }
 
-GrayPaletteMorph.prototype.drawNew = function () {
+// GrayPaletteMorph displaying:
+
+// Override
+GrayPaletteMorph.prototype.draw = function (canvas) {
     var context, ext, gradient;
 
     ext = this.extent();
-    this.image = newCanvas(this.extent());
-    context = this.image.getContext('2d');
-    this.choice = new Color();
+    context = canvas.getContext('2d');
     gradient = context.createLinearGradient(0, 0, ext.x, ext.y);
     gradient.addColorStop(0, 'black');
     gradient.addColorStop(1, 'white');
@@ -5438,9 +5677,9 @@ GrayPaletteMorph.prototype.drawNew = function () {
 
 // ColorPickerMorph inherits from Morph:
 
-ColorPickerMorph.prototype = new OldMorph();
+ColorPickerMorph.prototype = new Morph();
 ColorPickerMorph.prototype.constructor = ColorPickerMorph;
-ColorPickerMorph.uber = OldMorph.prototype;
+ColorPickerMorph.uber = Morph.prototype;
 
 // ColorPickerMorph instance creation:
 
@@ -5450,45 +5689,73 @@ function ColorPickerMorph(defaultColor) {
 
 ColorPickerMorph.prototype.init = function (defaultColor) {
     this.choice = defaultColor;
-    ColorPickerMorph.uber.init.call(this);
+    ColorPickerMorph.uber.init.call(this, true);
     this.color = new Color(255, 255, 255);
     this.silentSetExtent(new Point(80, 80));
-    this.drawNew();
+    this._buildSubmorphs();
+    this.setIsDirty();
 };
 
-ColorPickerMorph.prototype.drawNew = function () {
-    ColorPickerMorph.uber.drawNew.call(this);
-    this.buildSubmorphs();
-};
+ColorPickerMorph.prototype._buildSubmorphs = function () {
+    var x, y;
 
-ColorPickerMorph.prototype.buildSubmorphs = function () {
-    var cpal, gpal, x, y;
-
-    this.children.forEach(function (child) {
-        child.destroy();
-    });
-    this.children = [];
-    this.feedback = new OldMorph();
+    this.feedback = new Morph();
     this.feedback.color = this.choice;
     this.feedback.setExtent(new Point(20, 20));
-    cpal = new ColorPaletteMorph(
+
+    this.cpal = new ColorPaletteMorph(
         this.feedback,
         new Point(this.width(), 50)
     );
-    gpal = new GrayPaletteMorph(
+
+    this.gpal = new GrayPaletteMorph(
         this.feedback,
         new Point(this.width(), 5)
     );
-    cpal.setPosition(this.bounds.origin);
-    this.add(cpal);
-    gpal.setPosition(cpal.bottomLeft());
-    this.add(gpal);
-    x = (gpal.left() +
-        Math.floor((gpal.width() - this.feedback.width()) / 2));
-    y = gpal.bottom() + Math.floor((this.bottom() -
-        gpal.bottom() - this.feedback.height()) / 2);
+
+    this.cpal.setPosition(this.bounds.origin);
+    this.add(this.cpal);
+
+    this.gpal.setPosition(this.cpal.bottomLeft());
+    this.add(this.gpal);
+
+    x = (this.gpal.left() +
+        Math.floor((this.gpal.width() - this.feedback.width()) / 2));
+    y = this.gpal.bottom() + Math.floor((this.bottom() -
+        this.gpal.bottom() - this.feedback.height()) / 2);
     this.feedback.setPosition(new Point(x, y));
     this.add(this.feedback);
+};
+
+// ColorPickerMorph displaying:
+
+// Override
+ColorPickerMorph.prototype.setIsDirty = function () {
+    ColorPickerMorph.uber.setIsDirty.call(this);
+
+    // TODO: Try to be lazy about this?
+    this.feedback.color = this.choice;
+    this._layoutSubmorphs();
+};
+
+ColorPickerMorph.prototype._layoutSubmorphs = function () {
+    var x, y;
+
+    this.feedback.setExtent(new Point(20, 20));
+
+    this.cpal.setExtent(new Point(this.width(), 50));
+
+    this.gpal.setExtent(new Point(this.width(), 5));
+
+    this.cpal.setPosition(this.bounds.origin);
+
+    this.gpal.setPosition(this.cpal.bottomLeft());
+
+    x = (this.gpal.left() +
+        Math.floor((this.gpal.width() - this.feedback.width()) / 2));
+    y = this.gpal.bottom() + Math.floor((this.bottom() -
+        this.gpal.bottom() - this.feedback.height()) / 2);
+    this.feedback.setPosition(new Point(x, y));
 };
 
 ColorPickerMorph.prototype.getChoice = function () {
@@ -5507,21 +5774,21 @@ var BlinkerMorph;
 
 // BlinkerMorph inherits from Morph:
 
-BlinkerMorph.prototype = new OldMorph();
+BlinkerMorph.prototype = new Morph();
 BlinkerMorph.prototype.constructor = BlinkerMorph;
-BlinkerMorph.uber = OldMorph.prototype;
+BlinkerMorph.uber = Morph.prototype;
 
 // BlinkerMorph instance creation:
 
 function BlinkerMorph(rate) {
-    this.init(rate);
+    this.init(rate, true);
 }
 
-BlinkerMorph.prototype.init = function (rate) {
-    BlinkerMorph.uber.init.call(this);
+BlinkerMorph.prototype.init = function (rate, noDraw) {
+    BlinkerMorph.uber.init.call(this, noDraw);
     this.color = new Color(0, 0, 0);
     this.fps = rate || 2;
-    this.drawNew();
+    this.setIsDirty();
 };
 
 // BlinkerMorph stepping:
@@ -5551,10 +5818,10 @@ CursorMorph.prototype.viewPadding = 1;
 // CursorMorph instance creation:
 
 function CursorMorph(aStringOrTextMorph) {
-    this.init(aStringOrTextMorph);
+    this.init(aStringOrTextMorph, true);
 }
 
-CursorMorph.prototype.init = function (aStringOrTextMorph) {
+CursorMorph.prototype.init = function (aStringOrTextMorph, noDraw) {
     var ls;
 
     // additional properties:
@@ -5563,11 +5830,10 @@ CursorMorph.prototype.init = function (aStringOrTextMorph) {
     this.originalContents = this.target.text;
     this.originalAlignment = this.target.alignment;
     this.slot = this.target.text.length;
-    CursorMorph.uber.init.call(this);
+    CursorMorph.uber.init.call(this, null, noDraw);
     ls = fontHeight(this.target.fontSize);
     this.setExtent(new Point(Math.max(Math.floor(ls / 20), 1), ls));
-    this.drawNew();
-    this.image.getContext('2d').font = this.target.font();
+    this.setIsDirty();  // TODO: Need? Was changed from drawNew().
     if (this.target instanceof TextMorph &&
             (this.target.alignment !== 'left')) {
         this.target.setAlignmentToLeft();
@@ -5640,6 +5906,15 @@ CursorMorph.prototype.initializeClipboardHandler = function () {
         },
         false
     );
+};
+
+// CursorMorph displaying:
+
+// Override
+CursorMorph.prototype.draw = function (canvas) {
+    canvas.getContext('2d').font = this.target.font();
+
+    CursorMorph.uber.draw.call(this, canvas);
 };
 
 // CursorMorph event processing:
@@ -5868,7 +6143,7 @@ CursorMorph.prototype.updateSelection = function (shift) {
             this.target.endMark = this.slot;
         } else if (this.target.endMark !== this.slot) {
             this.target.endMark = this.slot;
-            this.target.drawNew();
+            this.target.setIsDirty();
             this.target.changed();
         }
     } else {
@@ -5898,7 +6173,7 @@ CursorMorph.prototype.cancel = function () {
 CursorMorph.prototype.undo = function () {
     this.target.text = this.originalContents;
     this.target.changed();
-    this.target.drawNew();
+    this.target.setIsDirty();
     this.target.changed();
     this.gotoSlot(0);
 };
@@ -5924,7 +6199,7 @@ CursorMorph.prototype.insert = function (aChar, shiftKey) {
             aChar +
             text.slice(this.slot);
         this.target.text = text;
-        this.target.drawNew();
+        this.target.setIsDirty();
         this.target.changed();
         this.goRight(false, aChar.length);
     }
@@ -5986,7 +6261,7 @@ CursorMorph.prototype.deleteRight = function () {
         this.target.changed();
         text = text.slice(0, this.slot) + text.slice(this.slot + 1);
         this.target.text = text;
-        this.target.drawNew();
+        this.target.setIsDirty();
     }
 };
 
@@ -6000,7 +6275,7 @@ CursorMorph.prototype.deleteLeft = function () {
     this.target.changed();
     this.target.text = text.substring(0, this.slot - 1) +
         text.substr(this.slot);
-    this.target.drawNew();
+    this.target.setIsDirty();
     this.goLeft();
 };
 
@@ -6009,7 +6284,7 @@ CursorMorph.prototype.deleteLeft = function () {
 CursorMorph.prototype.destroy = function () {
     if (this.target.alignment !== this.originalAlignment) {
         this.target.alignment = this.originalAlignment;
-        this.target.drawNew();
+        this.target.setIsDirty();
         this.target.changed();
     }
     this.destroyClipboardHandler();
@@ -6064,9 +6339,9 @@ var BoxMorph;
 
 // BoxMorph inherits from Morph:
 
-BoxMorph.prototype = new OldMorph();
+BoxMorph.prototype = new Morph();
 BoxMorph.prototype.constructor = BoxMorph;
-BoxMorph.uber = OldMorph.prototype;
+BoxMorph.uber = Morph.prototype;
 
 // BoxMorph instance creation:
 
@@ -6078,20 +6353,24 @@ BoxMorph.prototype.init = function (edge, border, borderColor) {
     this.edge = edge || 4;
     this.border = border || ((border === 0) ? 0 : 2);
     this.borderColor = borderColor || new Color();
-    BoxMorph.uber.init.call(this);
+    BoxMorph.uber.init.call(this, true);
 };
 
 // BoxMorph drawing:
 
-BoxMorph.prototype.drawNew = function () {
+// Override
+BoxMorph.prototype.draw = function (canvas) {
+    if ((this.edge === 0) && (this.border === 0)) {
+        BoxMorph.uber.draw.call(this, canvas);
+    } else {
+        this._drawForBoxMorph(canvas);
+    }
+};
+
+BoxMorph.prototype._drawForBoxMorph = function (canvas) {
     var context;
 
-    this.image = newCanvas(this.extent());
-    context = this.image.getContext('2d');
-    if ((this.edge === 0) && (this.border === 0)) {
-        BoxMorph.uber.drawNew.call(this);
-        return null;
-    }
+    context = canvas.getContext('2d');
     context.fillStyle = this.color.toString();
     context.beginPath();
     this.outlinePath(
@@ -6112,9 +6391,13 @@ BoxMorph.prototype.drawNew = function () {
 };
 
 BoxMorph.prototype.outlinePath = function (context, radius, inset) {
+    outlinePath(context, radius, inset, this.width(), this.height());
+};
+
+function outlinePath(context, radius, inset, width, height) {
     var offset = radius + inset,
-        w = this.width(),
-        h = this.height();
+        w = width,
+        h = height;
 
     // top left:
     context.arc(
@@ -6152,7 +6435,7 @@ BoxMorph.prototype.outlinePath = function (context, radius, inset) {
         radians(180),
         false
     );
-};
+}
 
 
 // BoxMorph menus:
@@ -6218,7 +6501,7 @@ BoxMorph.prototype.setBorderWidth = function (size) {
             this.border = Math.max(newSize, 0);
         }
     }
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -6226,7 +6509,7 @@ BoxMorph.prototype.setBorderColor = function (color) {
     // for context menu demo purposes
     if (color) {
         this.borderColor = color;
-        this.drawNew();
+        this.setIsDirty();
         this.changed();
     }
 };
@@ -6242,7 +6525,7 @@ BoxMorph.prototype.setCornerSize = function (size) {
             this.edge = Math.max(newSize, 0);
         }
     }
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -6300,7 +6583,7 @@ SpeechBubbleMorph.prototype.init = function (
     isThought // bool or anything but "true" to draw no hook at all
 ) {
     this.isPointingRight = true; // orientation of text
-    this.contents = contents || '';
+    this._contents = '';
     this.padding = padding || 0; // additional vertical pixels
     this.isThought = isThought || false; // draw "think" bubble
     this.isClickable = false;
@@ -6310,14 +6593,15 @@ SpeechBubbleMorph.prototype.init = function (
         border || ((border === 0) ? 0 : 1),
         borderColor || new Color(140, 140, 140)
     );
+    this.setContents(contents || '');
     this.color = color || new Color(230, 230, 230);
-    this.drawNew();
+    this.setIsDirty();
 };
 
 // SpeechBubbleMorph invoking:
 
 SpeechBubbleMorph.prototype.popUp = function (world, pos, isClickable) {
-    this.drawNew();
+    this.setIsDirty();  // TODO: Correct to change from drawNew()?
     this.setPosition(pos.subtract(new Point(0, this.height())));
     this.addShadow(new Point(2, 2), 80);
     this.keepWithin(world);
@@ -6335,32 +6619,38 @@ SpeechBubbleMorph.prototype.popUp = function (world, pos, isClickable) {
     }
 };
 
-// SpeechBubbleMorph drawing:
+// SpeechBubbleMorph contents:
 
-SpeechBubbleMorph.prototype.drawNew = function () {
+SpeechBubbleMorph.prototype.setContents = function (contents) {
+    if (this._contents === contents) {
+        return;
+    }
+
+    this._contents = contents;
+
     // re-build my contents
     if (this.contentsMorph) {
         this.contentsMorph.destroy();
     }
-    if (this.contents instanceof Morph) {
-        this.contentsMorph = this.contents;
-    } else if (isString(this.contents)) {
+    if (this._contents instanceof Morph) {
+        this.contentsMorph = this._contents;
+    } else if (isString(this._contents)) {
         this.contentsMorph = new TextMorph(
-            this.contents,
+            this._contents,
             MorphicPreferences.bubbleHelpFontSize,
             null,
             false,
             true,
             'center'
         );
-    } else if (this.contents instanceof HTMLCanvasElement) {
-        this.contentsMorph = new OldMorph();
-        this.contentsMorph.silentSetWidth(this.contents.width);
-        this.contentsMorph.silentSetHeight(this.contents.height);
-        this.contentsMorph.image = this.contents;
+    } else if (this._contents instanceof HTMLCanvasElement) {
+        this.contentsMorph = new Morph();
+        this.contentsMorph.silentSetWidth(this._contents.width);
+        this.contentsMorph.silentSetHeight(this._contents.height);
+        this.contentsMorph.setImage(this._contents);
     } else {
         this.contentsMorph = new TextMorph(
-            this.contents.toString(),
+            this._contents.toString(),
             MorphicPreferences.bubbleHelpFontSize,
             null,
             false,
@@ -6369,6 +6659,30 @@ SpeechBubbleMorph.prototype.drawNew = function () {
         );
     }
     this.add(this.contentsMorph);
+
+    this.setIsDirty();
+};
+
+SpeechBubbleMorph.prototype.getContents = function () {
+    return this._contents;
+};
+
+// SpeechBubbleMorph drawing:
+
+// Override
+SpeechBubbleMorph.prototype.setIsDirty = function () {
+    SpeechBubbleMorph.uber.setIsDirty.call(this);
+
+    // TODO: Try to be lazy about this?
+    this._updatePropertiesForSpeechBubbleMorph();
+};
+
+SpeechBubbleMorph.prototype._updatePropertiesForSpeechBubbleMorph =
+    function ()
+{
+    if (!this.contentsMorph) {
+        return;
+    }
 
     // adjust my layout
     this.silentSetWidth(this.contentsMorph.width() +
@@ -6379,9 +6693,6 @@ SpeechBubbleMorph.prototype.drawNew = function () {
         this.padding * 2 +
         2);
 
-    // draw my outline
-    SpeechBubbleMorph.uber.drawNew.call(this);
-
     // position my contents
     this.contentsMorph.setPosition(this.position().add(
         new Point(
@@ -6391,6 +6702,15 @@ SpeechBubbleMorph.prototype.drawNew = function () {
     ));
 };
 
+// Override
+SpeechBubbleMorph.prototype.draw = function (canvas) {
+    // TODO: Remove extraneous code?
+
+    // draw my outline
+    SpeechBubbleMorph.uber.draw.call(this, canvas);
+};
+
+// Override
 SpeechBubbleMorph.prototype.outlinePath = function (
     context,
     radius,
@@ -6507,7 +6827,7 @@ SpeechBubbleMorph.prototype.shadowImage = function (off, color) {
         offset = off || new Point(7, 7),
         clr = color || new Color(0, 0, 0);
     fb = this.extent();
-    img = this.image;
+    img = this.getImage();
     outline = newCanvas(fb);
     ctx = outline.getContext('2d');
     ctx.drawImage(img, 0, 0);
@@ -6532,7 +6852,7 @@ SpeechBubbleMorph.prototype.shadowImageBlurred = function (off, color) {
         blur = this.shadowBlur,
         clr = color || new Color(0, 0, 0);
     fb = this.extent().add(blur * 2);
-    img = this.image;
+    img = this.getImage();
     sha = newCanvas(fb);
     ctx = sha.getContext('2d');
     ctx.shadowOffsetX = offset.x;
@@ -6560,7 +6880,7 @@ SpeechBubbleMorph.prototype.shadowImageBlurred = function (off, color) {
 
 SpeechBubbleMorph.prototype.fixLayout = function () {
     this.removeShadow();
-    this.drawNew();
+    this.setIsDirty();
     this.addShadow(new Point(2, 2), 80);
 };
 
@@ -6572,9 +6892,9 @@ var DialMorph;
 
 // DialMorph inherits from Morph:
 
-DialMorph.prototype = new OldMorph();
+DialMorph.prototype = new Morph();
 DialMorph.prototype.constructor = DialMorph;
-DialMorph.uber = OldMorph.prototype;
+DialMorph.uber = Morph.prototype;
 
 function DialMorph(min, max, value, tick, radius) {
     this.init(min, max, value, tick, radius);
@@ -6589,7 +6909,7 @@ DialMorph.prototype.init = function (min, max, value, tick, radius) {
     this.tick = tick || 15;
     this.fillColor = null;
 
-    DialMorph.uber.init.call(this);
+    DialMorph.uber.init.call(this, true);
 
     this.color = new Color(230, 230, 230);
     this.noticesTransparentClick = true;
@@ -6612,7 +6932,7 @@ DialMorph.prototype.setValue = function (value, snapToTick, noUpdate) {
     		this.value -= this.value % this.tick % this.value;
         }
     }
-	this.drawNew();
+	this.setIsDirty();
  	this.changed();
   	if (noUpdate) {return; }
   	this.updateTarget();
@@ -6639,7 +6959,8 @@ DialMorph.prototype.setExtent = function (aPoint) {
     DialMorph.uber.setExtent.call(this, new Point(size, size));
 };
 
-DialMorph.prototype.drawNew = function () {
+// Override
+DialMorph.prototype.draw = function (canvas) {
     var ctx, i, angle, x1, y1, x2, y2,
     	light = this.color.lighter().toString(),
     	range = this.max - this.min,
@@ -6648,8 +6969,10 @@ DialMorph.prototype.drawNew = function () {
       	inner = face * 0.85,
        	outer = face * 0.95;
 
-    this.image = newCanvas(this.extent());
-    ctx = this.image.getContext('2d');
+    ctx = canvas.getContext('2d');
+
+    // clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     // draw a light border:
     ctx.fillStyle = light;
@@ -6881,16 +7204,16 @@ var CircleBoxMorph;
 
 // CircleBoxMorph inherits from Morph:
 
-CircleBoxMorph.prototype = new OldMorph();
+CircleBoxMorph.prototype = new Morph();
 CircleBoxMorph.prototype.constructor = CircleBoxMorph;
-CircleBoxMorph.uber = OldMorph.prototype;
+CircleBoxMorph.uber = Morph.prototype;
 
 function CircleBoxMorph(orientation) {
     this.init(orientation || 'vertical');
 }
 
 CircleBoxMorph.prototype.init = function (orientation) {
-    CircleBoxMorph.uber.init.call(this);
+    CircleBoxMorph.uber.init.call(this, true);
     this.orientation = orientation;
     this.autoOrient = true;
     this.setExtent(new Point(20, 100));
@@ -6904,16 +7227,29 @@ CircleBoxMorph.prototype.autoOrientation = function () {
     }
 };
 
-CircleBoxMorph.prototype.drawNew = function () {
+// Override
+CircleBoxMorph.prototype.setIsDirty = function () {
+    CircleBoxMorph.uber.setIsDirty.call(this);
+
+    // TODO: May want to try to be lazy about this:
+    this._updatePropertiesForCircleBoxMorph();
+};
+
+CircleBoxMorph.prototype._updatePropertiesForCircleBoxMorph = function () {
+    if (this.autoOrient) {
+        this.autoOrientation();
+    }
+};
+
+// Override
+CircleBoxMorph.prototype.draw = function (canvas) {
     var radius, center1, center2, rect, points, x, y,
         context, ext,
         myself = this;
 
-    if (this.autoOrient) {
-        this.autoOrientation();
-    }
-    this.image = newCanvas(this.extent());
-    context = this.image.getContext('2d');
+    context = canvas.getContext('2d');
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
 
     if (this.orientation === 'vertical') {
         radius = this.width() / 2;
@@ -6991,65 +7327,43 @@ CircleBoxMorph.prototype.toggleOrientation = function () {
     }
     this.silentSetExtent(new Point(this.height(), this.width()));
     this.setCenter(center);
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
-// SliderButtonMorph ///////////////////////////////////////////////////
+// SliderButtonContentMorph ///////////////////////////////////////////////////
 
-var SliderButtonMorph;
+var SliderButtonContentMorph;
 
-// SliderButtonMorph inherits from CircleBoxMorph:
+// SliderButtonContentMorph inherits from CircleBoxMorph:
 
-SliderButtonMorph.prototype = new CircleBoxMorph();
-SliderButtonMorph.prototype.constructor = SliderButtonMorph;
-SliderButtonMorph.uber = CircleBoxMorph.prototype;
+SliderButtonContentMorph.prototype = new CircleBoxMorph();
+SliderButtonContentMorph.prototype.constructor = SliderButtonContentMorph;
+SliderButtonContentMorph.uber = CircleBoxMorph.prototype;
 
-function SliderButtonMorph(orientation) {
+function SliderButtonContentMorph(orientation) {
     this.init(orientation);
 }
 
-SliderButtonMorph.prototype.init = function (orientation) {
-    this.color = new Color(80, 80, 80);
-    this.highlightColor = new Color(90, 90, 140);
-    this.pressColor = new Color(80, 80, 160);
+SliderButtonContentMorph.prototype.init = function (orientation) {
     this.is3D = false;
     this.hasMiddleDip = true;
-    SliderButtonMorph.uber.init.call(this, orientation);
+    SliderButtonContentMorph.uber.init.call(this, orientation);
 };
 
-SliderButtonMorph.prototype.autoOrientation = nop;
+SliderButtonContentMorph.prototype.autoOrientation = nop;
 
-SliderButtonMorph.prototype.drawNew = function () {
-    var colorBak = this.color.copy();
+// Override
+SliderButtonContentMorph.prototype.draw = function (canvas) {
+    SliderButtonContentMorph.uber.draw.call(this, canvas);
 
-    SliderButtonMorph.uber.drawNew.call(this);
     if (this.is3D || !MorphicPreferences.isFlat) {
-        this.drawEdges();
+        this._drawEdges(canvas);
     }
-    this.normalImage = this.image;
-
-    this.color = this.highlightColor.copy();
-    SliderButtonMorph.uber.drawNew.call(this);
-    if (this.is3D || !MorphicPreferences.isFlat) {
-        this.drawEdges();
-    }
-    this.highlightImage = this.image;
-
-    this.color = this.pressColor.copy();
-    SliderButtonMorph.uber.drawNew.call(this);
-    if (this.is3D || !MorphicPreferences.isFlat) {
-        this.drawEdges();
-    }
-    this.pressImage = this.image;
-
-    this.color = colorBak;
-    this.image = this.normalImage;
-
 };
 
-SliderButtonMorph.prototype.drawEdges = function () {
-    var context = this.image.getContext('2d'),
+SliderButtonContentMorph.prototype._drawEdges = function (canvas) {
+    var context = canvas.getContext('2d'),
         gradient,
         radius,
         w = this.width(),
@@ -7179,26 +7493,90 @@ SliderButtonMorph.prototype.drawEdges = function () {
     }
 };
 
+SliderButtonContentMorph.prototype.mouseMove = function () {
+    // prevent my parent from getting picked up
+    nop();
+};
+
+// SliderButtonMorph ///////////////////////////////////////////////////
+
+var SliderButtonMorph;
+
+// SliderButtonMorph inherits from MultiStateMorph:
+
+SliderButtonMorph.prototype = new MultiStateMorph();
+SliderButtonMorph.prototype.constructor = SliderButtonMorph;
+SliderButtonMorph.uber = MultiStateMorph.prototype;
+
+function SliderButtonMorph(orientation) {
+    this.init(orientation);
+}
+
+SliderButtonMorph.prototype.init = function (orientation) {
+    this.color = new Color(80, 80, 80);
+    this.highlightColor = new Color(90, 90, 140);
+    this.pressColor = new Color(80, 80, 160);
+    this.is3D = false;
+    this.hasMiddleDip = true;
+    this.orientation = orientation;
+    SliderButtonMorph.uber.init.call(this, true);
+
+    this.normalContentMorph = new SliderButtonContentMorph(orientation);
+    this.normalContentMorph.color = this.color.copy();
+    this.addStateMorph(this.normalContentMorph);
+
+    this.highlightContentMorph = new SliderButtonContentMorph(orientation);
+    this.highlightContentMorph.color = this.highlightColor.copy();
+    this.addStateMorph(this.highlightContentMorph);
+
+    this.pressContentMorph = new SliderButtonContentMorph(orientation);
+    this.pressContentMorph.color = this.pressColor.copy();
+    this.addStateMorph(this.pressContentMorph);
+};
+
+// Override
+SliderButtonMorph.prototype.setIsDirty = function () {
+    SliderButtonMorph.uber.setIsDirty.call(this);
+
+    var myself = this;
+
+    // TODO: Do this lazily.
+    this._stateMorphs.forEach(function (contentMorph) {
+        // TODO: Other changes besides orientation???
+        if (contentMorph.orientation !== myself.orientation) {
+            contentMorph.orientation = myself.orientation;
+            contentMorph.setIsDirty();
+        }
+    });
+};
+
+// Override
+SliderButtonMorph.prototype.draw = function (canvas) {
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+};
+
+SliderButtonMorph.prototype.autoOrientation = nop;
+
 //SliderButtonMorph events:
 
 SliderButtonMorph.prototype.mouseEnter = function () {
-    this.image = this.highlightImage;
+    this.setState(1);   // highlight state
     this.changed();
 };
 
 SliderButtonMorph.prototype.mouseLeave = function () {
-    this.image = this.normalImage;
+    this.setState(0);   // normal state
     this.changed();
 };
 
 SliderButtonMorph.prototype.mouseDownLeft = function (pos) {
-    this.image = this.pressImage;
+    this.setState(2);   // press state
     this.changed();
     this.escalateEvent('mouseDownLeft', pos);
 };
 
 SliderButtonMorph.prototype.mouseClickLeft = function () {
-    this.image = this.highlightImage;
+    this.setState(1);   // highlight state
     this.changed();
 };
 
@@ -7251,7 +7629,7 @@ SliderMorph.prototype.init = function (
     this.alpha = 0.3;
     this.color = color || new Color(0, 0, 0);
     this.setExtent(new Point(20, 100));
-    // this.drawNew();
+    // this.drawNew();  // TODO: Remove?
 };
 
 SliderMorph.prototype.autoOrientation = nop;
@@ -7273,10 +7651,15 @@ SliderMorph.prototype.unitSize = function () {
         this.rangeSize();
 };
 
-SliderMorph.prototype.drawNew = function () {
+
+// Override
+SliderMorph.prototype.setIsDirty = function () {
+    SliderMorph.uber.setIsDirty.call(this);
+
+    // TODO: Do this lazily.
+
     var bw, bh, posX, posY;
 
-    SliderMorph.uber.drawNew.call(this);
     this.button.orientation = this.orientation;
     if (this.orientation === 'vertical') {
         bw  = this.width() - 2;
@@ -7300,7 +7683,7 @@ SliderMorph.prototype.drawNew = function () {
     this.button.setPosition(
         new Point(posX, posY).add(this.bounds.origin)
     );
-    this.button.drawNew();
+    this.button.setIsDirty();
     this.button.changed();
 };
 
@@ -7420,7 +7803,7 @@ SliderMorph.prototype.setStart = function (num, noUpdate) {
     }
     this.value = Math.max(this.value, this.start);
     if (!noUpdate) {this.updateTarget(); }
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -7437,7 +7820,7 @@ SliderMorph.prototype.setStop = function (num, noUpdate) {
     }
     this.value = Math.min(this.value, this.stop);
     if (!noUpdate) {this.updateTarget(); }
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -7460,7 +7843,7 @@ SliderMorph.prototype.setSize = function (num, noUpdate) {
     }
     this.value = Math.min(this.value, this.stop - this.size);
     if (!noUpdate) {this.updateTarget(); }
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -7580,7 +7963,7 @@ MouseSensorMorph.prototype.init = function (edge, border, borderColor) {
     this.upStep = 0.05;
     this.downStep = 0.02;
     this.noticesTransparentClick = false;
-    this.drawNew();
+    this.setIsDirty();
 };
 
 MouseSensorMorph.prototype.touch = function () {
@@ -7673,7 +8056,7 @@ InspectorMorph.prototype.init = function (target) {
     this.color = new Color(60, 60, 60);
     this.borderColor = new Color(95, 95, 95);
     this.fps = 25;
-    this.drawNew();
+    this.setIsDirty();
 
     // panes:
     this.label = null;
@@ -7743,7 +8126,7 @@ InspectorMorph.prototype.buildPanes = function () {
     this.label.fontSize = MorphicPreferences.menuFontSize;
     this.label.isBold = true;
     this.label.color = new Color(255, 255, 255);
-    this.label.drawNew();
+    this.label.setIsDirty();
     this.add(this.label);
 
     // properties list
@@ -7966,9 +8349,9 @@ InspectorMorph.prototype.fixLayout = function () {
     this.label.setWidth(w);
     if (this.label.height() > (this.height() - 50)) {
         this.silentSetHeight(this.label.height() + 50);
-        this.drawNew();
+        this.setIsDirty();
         this.changed();
-        this.resizer.drawNew();
+        this.resizer.setIsDirty();
     }
 
     // list
@@ -8045,9 +8428,9 @@ InspectorMorph.prototype.save = function () {
         // this.target[prop] = evaluate(txt);
         this.target.evaluateString('this.' + prop + ' = ' + txt);
         this.hasUserEditedDetails = false;
-        if (this.target.drawNew) {
+        if (this.target.setIsDirty) {
             this.target.changed();
-            this.target.drawNew();
+            this.target.setIsDirty();
             this.target.changed();
         }
     } catch (err) {
@@ -8063,9 +8446,9 @@ InspectorMorph.prototype.addProperty = function () {
             if (prop) {
                 myself.target[prop] = null;
                 myself.buildPanes();
-                if (myself.target.drawNew) {
+                if (myself.target.setIsDirty) {
                     myself.target.changed();
-                    myself.target.drawNew();
+                    myself.target.setIsDirty();
                     myself.target.changed();
                 }
             }
@@ -8088,9 +8471,9 @@ InspectorMorph.prototype.renameProperty = function () {
                 myself.inform(err);
             }
             myself.buildPanes();
-            if (myself.target.drawNew) {
+            if (myself.target.setIsDirty) {
                 myself.target.changed();
-                myself.target.drawNew();
+                myself.target.setIsDirty();
                 myself.target.changed();
             }
         },
@@ -8105,9 +8488,9 @@ InspectorMorph.prototype.removeProperty = function () {
         delete (this.target[prop]);
         this.currentProperty = null;
         this.buildPanes();
-        if (this.target.drawNew) {
+        if (this.target.setIsDirty) {
             this.target.changed();
-            this.target.drawNew();
+            this.target.setIsDirty();
             this.target.changed();
         }
     } catch (err) {
@@ -8122,7 +8505,7 @@ InspectorMorph.prototype.step = function () {
     var lbl = this.target.toString();
     if (this.label.text === lbl) {return; }
     this.label.text = lbl;
-    this.label.drawNew();
+    this.label.setIsDirty();
     this.fixLayout();
 };
 
@@ -8255,7 +8638,7 @@ MenuMorph.prototype.createLabel = function () {
     text.alignment = 'center';
     text.color = new Color(255, 255, 255);
     text.backgroundColor = this.borderColor;
-    text.drawNew();
+    text.setIsDirty();
     this.label = new BoxMorph(3, 0);
     if (MorphicPreferences.isFlat) {
         this.label.edge = 0;
@@ -8263,12 +8646,27 @@ MenuMorph.prototype.createLabel = function () {
     this.label.color = this.borderColor;
     this.label.borderColor = this.borderColor;
     this.label.setExtent(text.extent().add(4));
-    this.label.drawNew();
+    this.label.setIsDirty();
     this.label.add(text);
     this.label.text = text;
 };
 
-MenuMorph.prototype.drawNew = function () {
+// Override
+MenuMorph.prototype.setIsDirty = function () {
+    // TODO: May want to try to be lazy about these changes.
+
+    // NOTE: Change extent BEFORE calling superclass method
+    // because the superclass method will use the extent!!!
+
+    this.repopulateMenu();
+
+    // REMINDER: Only call superclass method
+    // AFTER the extent has been change
+    // because the superclass method will use the extent!!!
+    MenuMorph.uber.setIsDirty.call(this);
+};
+
+MenuMorph.prototype.repopulateMenu = function () {
     var myself = this,
         item,
         fb,
@@ -8310,7 +8708,7 @@ MenuMorph.prototype.drawNew = function () {
             item = tuple;
         } else if (tuple[0] === 0) {
             isLine = true;
-            item = new OldMorph();
+            item = new Morph();
             item.color = myself.borderColor;
             item.setHeight(tuple[1]);
         } else {
@@ -8343,7 +8741,6 @@ MenuMorph.prototype.drawNew = function () {
     fb = this.fullBounds();
     this.silentSetExtent(fb.extent().add(4));
     this.adjustWidths();
-    MenuMorph.uber.drawNew.call(this);
 };
 
 MenuMorph.prototype.maxWidth = function () {
@@ -8384,13 +8781,13 @@ MenuMorph.prototype.adjustWidths = function () {
         }
         if (item instanceof MenuItemMorph) {
             item.fixLayout();
-            isSelected = (item.image === item.pressImage);
-            item.createBackgrounds();
+            isSelected = (item.getState() === 2);   // pressed state
+            item.setIsDirty();
             if (isSelected) {
-                item.image = item.pressImage;
+                item.setState(2);   // pressed state
             }
         } else {
-            item.drawNew();
+            item.setIsDirty();
             if (item === myself.label) {
                 item.text.setPosition(
                     item.center().subtract(
@@ -8405,11 +8802,11 @@ MenuMorph.prototype.adjustWidths = function () {
 MenuMorph.prototype.unselectAllItems = function () {
     this.children.forEach(function (item) {
         if (item instanceof MenuItemMorph) {
-            item.image = item.normalImage;
+            item.setState(0);   // normal state
         } else if (item instanceof ScrollFrameMorph) {
         	item.contents.children.forEach(function (morph) {
          		if (morph instanceof MenuItemMorph) {
-           			morph.image = morph.normalImage;
+           			morph.setState(0);   // normal state
               	}
          	});
         }
@@ -8422,7 +8819,7 @@ MenuMorph.prototype.unselectAllItems = function () {
 MenuMorph.prototype.popup = function (world, pos) {
 	var scroller;
 
-    this.drawNew();
+    this.setIsDirty();
     this.setPosition(pos);
     this.addShadow(new Point(2, 2), 80);
     this.keepWithin(world);
@@ -8432,7 +8829,12 @@ MenuMorph.prototype.popup = function (world, pos) {
     	this.removeShadow();
         scroller = this.scroll();
         this.bounds.corner.y = world.bottom() - 2;
-        MenuMorph.uber.drawNew.call(this);
+
+        // TODO: Replace this code for real in the new lazy drawing system!!!
+        //MenuMorph.uber.drawNew.call(this);
+        // Temp code here:
+        MenuMorph.uber.setIsDirty.call(this);
+
         this.addShadow(new Point(2, 2), 80);
         scroller.setHeight(world.bottom() - scroller.top() - 6);
         scroller.adjustScrollBars(); // ?
@@ -8472,7 +8874,7 @@ MenuMorph.prototype.popUpAtHand = function (world) {
 
 MenuMorph.prototype.popUpCenteredAtHand = function (world) {
     var wrrld = world || this.world;
-    this.drawNew();
+    this.setIsDirty();
     this.popup(
         wrrld,
         wrrld.hand.position().subtract(
@@ -8483,7 +8885,7 @@ MenuMorph.prototype.popUpCenteredAtHand = function (world) {
 
 MenuMorph.prototype.popUpCenteredInWorld = function (world) {
     var wrrld = world || this.world;
-    this.drawNew();
+    this.setIsDirty();
     this.popup(
         wrrld,
         wrrld.center().subtract(
@@ -8638,7 +9040,7 @@ MenuMorph.prototype.leaveSubmenu = function () {
 
 MenuMorph.prototype.select = function (aMenuItem) {
     this.unselectAllItems();
-    aMenuItem.image = aMenuItem.highlightImage;
+    aMenuItem.setState(1);  // highlight state
     aMenuItem.changed();
     aMenuItem.scrollIntoView();
     this.selection = aMenuItem;
@@ -8651,15 +9053,51 @@ MenuMorph.prototype.destroy = function () {
     MenuMorph.uber.destroy.call(this);
 };
 
+// AbstractStringMorph /////////////////////////////////////////////////////////
+
+// I am an abstract base class for StringMorph and TextMorph
+
+// AbstractStringMorph inherits from Morph:
+
+AbstractStringMorph.prototype = new Morph();
+AbstractStringMorph.prototype.constructor = AbstractStringMorph;
+AbstractStringMorph.uber = Morph.prototype;
+
+// AbstractStringMorph instance creation:
+
+function AbstractStringMorph() {
+    this.init(true);
+}
+
+AbstractStringMorph.prototype.init = function () {
+    AbstractStringMorph.uber.init.call(this, true);
+};
+
+AbstractStringMorph.prototype._getDummyContextWithFontSet = function () {
+    // for use to measure text
+
+    var dummyCanvas, dummyContext;
+
+    dummyCanvas = newCanvas();
+    dummyContext = dummyCanvas.getContext('2d');
+    dummyContext.font = this.font();
+
+    return dummyContext;
+};
+
+AbstractStringMorph.prototype.font = function () {
+    throw new Error('Abstract method not implemented in subclass.');
+};
+
 // StringMorph /////////////////////////////////////////////////////////
 
 // I am a single line of text
 
-// StringMorph inherits from Morph:
+// StringMorph inherits from AbstractStringMorph:
 
-StringMorph.prototype = new OldMorph();
+StringMorph.prototype = new AbstractStringMorph();
 StringMorph.prototype.constructor = StringMorph;
-StringMorph.uber = OldMorph.prototype;
+StringMorph.uber = AbstractStringMorph.prototype;
 
 // StringMorph instance creation:
 
@@ -8730,7 +9168,7 @@ StringMorph.prototype.init = function (
     // override inherited properites:
     this.color = color || new Color(0, 0, 0);
     this.noticesTransparentClick = true;
-    this.drawNew();
+    this.setIsDirty();
 };
 
 StringMorph.prototype.toString = function () {
@@ -8765,20 +9203,23 @@ StringMorph.prototype.font = function () {
         this.fontStyle;
 };
 
-StringMorph.prototype.drawNew = function () {
-    var context, width, start, stop, i, p, c, x, y,
+// Override
+StringMorph.prototype.setIsDirty = function () {
+    // TODO: May want to try to be lazy about these changes.
+
+    // NOTE: Change extent BEFORE calling superclass method
+    // because the superclass method will use the extent!!!
+
+    var dummyContext, width,
         shadowOffset = this.shadowOffset || new Point(),
         txt = this.isPassword ?
                 this.password('*', this.text.length) : this.text;
 
-    // initialize my surface property
-    this.image = newCanvas();
-    context = this.image.getContext('2d');
-    context.font = this.font();
+    dummyContext = this._getDummyContextWithFontSet();
 
     // set my extent
     width = Math.max(
-        context.measureText(txt).width + Math.abs(shadowOffset.x),
+        dummyContext.measureText(txt).width + Math.abs(shadowOffset.x),
         1
     );
     this.bounds.corner = this.bounds.origin.add(
@@ -8787,8 +9228,29 @@ StringMorph.prototype.drawNew = function () {
             fontHeight(this.fontSize) + Math.abs(shadowOffset.y)
         )
     );
-    this.image.width = width;
-    this.image.height = this.height();
+
+    // REMINDER: Only call superclass method
+    // AFTER the extent has been change
+    // because the superclass method will use the extent!!!
+    StringMorph.uber.setIsDirty.call(this);
+
+    // notify my parent of layout change
+    if (this.parent) {
+        if (this.parent.fixLayout) {
+            this.parent.fixLayout();
+        }
+    }
+};
+
+// Override
+StringMorph.prototype.draw = function (canvas) {
+    var context, start, stop, i, p, c, x, y,
+        shadowOffset = this.shadowOffset || new Point(),
+        txt = this.isPassword ?
+                this.password('*', this.text.length) : this.text;
+
+    // initialize my surface property
+    context = canvas.getContext('2d');
 
     // prepare context for drawing text
     context.font = this.font();
@@ -8825,13 +9287,6 @@ StringMorph.prototype.drawNew = function () {
             fontHeight(this.fontSize) + y);
         context.fillStyle = this.markedTextColor.toString();
         context.fillText(c, p.x + x, fontHeight(this.fontSize) + y);
-    }
-
-    // notify my parent of layout change
-    if (this.parent) {
-        if (this.parent.fixLayout) {
-            this.parent.fixLayout();
-        }
     }
 };
 
@@ -8880,7 +9335,7 @@ StringMorph.prototype.slotPosition = function (slot) {
     var txt = this.isPassword ?
                 this.password('*', this.text.length) : this.text,
         dest = Math.min(Math.max(slot, 0), txt.length),
-        context = this.image.getContext('2d'),
+        context = this._getDummyContextWithFontSet(),
         xOffset,
         x,
         y,
@@ -8905,7 +9360,7 @@ StringMorph.prototype.slotAt = function (aPoint) {
                 this.password('*', this.text.length) : this.text,
         idx = 0,
         charX = 0,
-        context = this.image.getContext('2d');
+        context = this._getDummyContextWithFontSet();
 
     while (aPoint.x - this.left() > charX) {
         charX += context.measureText(txt[idx]).width;
@@ -9053,42 +9508,42 @@ StringMorph.prototype.toggleIsDraggable = function () {
 StringMorph.prototype.toggleShowBlanks = function () {
     this.isShowingBlanks = !this.isShowingBlanks;
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
 StringMorph.prototype.toggleWeight = function () {
     this.isBold = !this.isBold;
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
 StringMorph.prototype.toggleItalic = function () {
     this.isItalic = !this.isItalic;
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
 StringMorph.prototype.toggleIsPassword = function () {
     this.isPassword = !this.isPassword;
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
 StringMorph.prototype.setSerif = function () {
     this.fontStyle = 'serif';
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
 StringMorph.prototype.setSansSerif = function () {
     this.fontStyle = 'sans-serif';
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -9106,7 +9561,7 @@ StringMorph.prototype.setFontSize = function (size) {
         }
     }
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -9114,7 +9569,7 @@ StringMorph.prototype.setText = function (size) {
     // for context menu demo purposes
     this.text = Math.round(size).toString();
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -9155,7 +9610,7 @@ StringMorph.prototype.clearSelection = function () {
     this.currentlySelecting = false;
     this.startMark = null;
     this.endMark = null;
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -9178,7 +9633,7 @@ StringMorph.prototype.selectAll = function () {
             cursor.gotoSlot(this.text.length);
         }
         this.endMark = this.text.length;
-        this.drawNew();
+        this.setIsDirty();
         this.changed();
     }
 };
@@ -9202,7 +9657,7 @@ StringMorph.prototype.shiftClick = function (pos) {
         }
         cursor.gotoPos(pos);
         this.endMark = cursor.slot;
-        this.drawNew();
+        this.setIsDirty();
         this.changed();
     }
     this.currentlySelecting = false;
@@ -9265,7 +9720,7 @@ StringMorph.prototype.selectWordAt = function (slot) {
         this.endMark = this.nextWordFrom(slot);
     }
 
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -9281,7 +9736,7 @@ StringMorph.prototype.selectBetweenWordsAt = function (slot) {
         this.endMark += 1;
     }
 
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -9310,7 +9765,7 @@ StringMorph.prototype.enableSelecting = function () {
             var newMark = this.slotAt(pos);
             if (newMark !== this.endMark) {
                 this.endMark = newMark;
-                this.drawNew();
+                this.setIsDirty();
                 this.changed();
             }
         }
@@ -9325,12 +9780,13 @@ StringMorph.prototype.disableSelecting = function () {
 // TextMorph ////////////////////////////////////////////////////////////////
 
 // I am a multi-line, word-wrapping String, quasi-inheriting from StringMorph
+// TODO: Get rid of quasi-inheriting for proper inheriting.
 
-// TextMorph inherits from Morph:
+// TextMorph inherits from AbstractStringMorph:
 
-TextMorph.prototype = new OldMorph();
+TextMorph.prototype = new AbstractStringMorph();
 TextMorph.prototype.constructor = TextMorph;
-TextMorph.uber = OldMorph.prototype;
+TextMorph.uber = AbstractStringMorph.prototype;
 
 // TextMorph instance creation:
 
@@ -9405,7 +9861,7 @@ TextMorph.prototype.init = function (
     // override inherited properites:
     this.color = new Color(0, 0, 0);
     this.noticesTransparentClick = true;
-    this.drawNew();
+    this.setIsDirty();
 };
 
 TextMorph.prototype.toString = function () {
@@ -9418,14 +9874,12 @@ TextMorph.prototype.font = StringMorph.prototype.font;
 TextMorph.prototype.parse = function () {
     var myself = this,
         paragraphs = this.text.split('\n'),
-        canvas = newCanvas(),
-        context = canvas.getContext('2d'),
+        context = this._getDummyContextWithFontSet(),
         oldline = '',
         newline,
         w,
         slot = 0;
 
-    context.font = this.font();
     this.maxLineWidth = 0;
     this.lines = [];
     this.lineSlots = [0];
@@ -9468,14 +9922,16 @@ TextMorph.prototype.parse = function () {
     });
 };
 
-TextMorph.prototype.drawNew = function () {
-    var context, height, i, line, width, shadowHeight, shadowWidth,
-        offx, offy, x, y, start, stop, p, c;
+// Override
+TextMorph.prototype.setIsDirty = function () {
+    // TODO: May want to try to be lazy about these changes.
 
-    this.image = newCanvas();
-    context = this.image.getContext('2d');
-    context.font = this.font();
-    this.parse();
+    // NOTE: Change extent BEFORE calling superclass method
+    // because the superclass method will use the extent!!!
+
+    var height, shadowHeight, shadowWidth;
+
+    this.parse();   // TODO: Maybe be lazy about this? So put in draw()?
 
     // set my extent
     shadowWidth = Math.abs(this.shadowOffset.x);
@@ -9490,11 +9946,33 @@ TextMorph.prototype.drawNew = function () {
             new Point(this.maxWidth + shadowWidth, height)
         );
     }
-    this.image.width = this.width();
-    this.image.height = this.height();
+
+    // REMINDER: Only call superclass method
+    // AFTER the extent has been change
+    // because the superclass method will use the extent!!!
+    TextMorph.uber.setIsDirty.call(this);
+
+    // notify my parent of layout change
+    if (this.parent) {
+        if (this.parent.layoutChanged) {
+            this.parent.layoutChanged();
+        }
+    }
+};
+
+// Override
+TextMorph.prototype.draw = function (canvas) {
+    var context, height, i, line, width, shadowHeight, shadowWidth,
+        offx, offy, x, y, start, stop, p, c;
+
+    context = canvas.getContext('2d');
+
+    shadowWidth = Math.abs(this.shadowOffset.x);
+    shadowHeight = Math.abs(this.shadowOffset.y);
+    height = this.lines.length * (fontHeight(this.fontSize) + shadowHeight);
 
     // prepare context for drawing text
-    context = this.image.getContext('2d');
+    context = canvas.getContext('2d');
     context.font = this.font();
     context.textAlign = 'left';
     context.textBaseline = 'bottom';
@@ -9559,19 +10037,12 @@ TextMorph.prototype.drawNew = function () {
         context.fillStyle = this.markedTextColor.toString();
         context.fillText(c, p.x, p.y + fontHeight(this.fontSize));
     }
-
-    // notify my parent of layout change
-    if (this.parent) {
-        if (this.parent.layoutChanged) {
-            this.parent.layoutChanged();
-        }
-    }
 };
 
 TextMorph.prototype.setExtent = function (aPoint) {
     this.maxWidth = Math.max(aPoint.x, 0);
     this.changed();
-    this.drawNew();
+    this.setIsDirty();
 };
 
 // TextMorph mesuring:
@@ -9602,7 +10073,7 @@ TextMorph.prototype.slotPosition = function (slot) {
     // answer the physical position point of the given index ("slot")
     // where the cursor should be placed
     var colRow = this.columnRow(slot),
-        context = this.image.getContext('2d'),
+        context = this._getDummyContextWithFontSet(),
         shadowHeight = Math.abs(this.shadowOffset.y),
         xOffset = 0,
         yOffset,
@@ -9628,7 +10099,7 @@ TextMorph.prototype.slotAt = function (aPoint) {
         row = 0,
         col = 0,
         shadowHeight = Math.abs(this.shadowOffset.y),
-        context = this.image.getContext('2d');
+        context = this._getDummyContextWithFontSet();
 
     while (aPoint.y - this.top() >
             ((fontHeight(this.fontSize) + shadowHeight) * row)) {
@@ -9783,19 +10254,19 @@ TextMorph.prototype.developersMenu = function () {
 
 TextMorph.prototype.setAlignmentToLeft = function () {
     this.alignment = 'left';
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
 TextMorph.prototype.setAlignmentToRight = function () {
     this.alignment = 'right';
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
 TextMorph.prototype.setAlignmentToCenter = function () {
     this.alignment = 'center';
-    this.drawNew();
+    this.setIsDirty();
     this.changed();
 };
 
@@ -9874,11 +10345,11 @@ TextMorph.prototype.inspectIt = function () {
 
 // I provide basic button functionality
 
-// TriggerMorph inherits from Morph:
+// TriggerMorph inherits from MultiStateMorph:
 
-TriggerMorph.prototype = new OldMorph();
+TriggerMorph.prototype = new MultiStateMorph();
 TriggerMorph.prototype.constructor = TriggerMorph;
-TriggerMorph.uber = OldMorph.prototype;
+TriggerMorph.uber = MultiStateMorph.prototype;
 
 // TriggerMorph instance creation:
 
@@ -9941,48 +10412,101 @@ TriggerMorph.prototype.init = function (
     this.labelItalic = labelItalic || false;
 
     // initialize inherited properties:
-    TriggerMorph.uber.init.call(this);
+    TriggerMorph.uber.init.call(this, true);
 
     // override inherited properites:
     this.color = new Color(255, 255, 255);
-    this.drawNew();
+
+    this.createBackgroundMorphs();
+    this.setIsDirty();
+};
+
+TriggerMorph.prototype.createBackgroundMorphs = function () {
+    this.normalBackgroundMorph = this.makeNormalBackgroundMorph();
+    this.addStateMorph(this.normalBackgroundMorph);
+
+    this.highlightBackgroundMorph = this.makeHighlightBackgroundMorph();
+    this.addStateMorph(this.highlightBackgroundMorph);
+
+    this.pressBackgroundMorph = this.makePressBackgroundMorph();
+    this.addStateMorph(this.pressBackgroundMorph);
+};
+
+TriggerMorph.prototype.makeNormalBackgroundMorph = function () {
+    // Override in subclass to return a different morph if desired.
+    var normalBackgroundMorph = new Morph();
+    normalBackgroundMorph.color = this.color;
+    return normalBackgroundMorph;
+};
+
+TriggerMorph.prototype.makeHighlightBackgroundMorph = function () {
+    // Override in subclass to return a different morph if desired.
+    var highlightBackgroundMorph = new Morph();
+    highlightBackgroundMorph.color = this.highlightColor;
+    return highlightBackgroundMorph;
+};
+
+TriggerMorph.prototype.makePressBackgroundMorph = function () {
+    // Override in subclass to return a different morph if desired.
+    var pressBackgroundMorph = new Morph();
+    pressBackgroundMorph.color = this.pressColor;
+    return pressBackgroundMorph;
 };
 
 // TriggerMorph drawing:
 
-TriggerMorph.prototype.drawNew = function () {
-    this.createBackgrounds();
-    if (this.labelString !== null) {
-        this.createLabel();
+// Override
+TriggerMorph.prototype.setIsDirty = function () {
+    TriggerMorph.uber.setIsDirty.call(this);
+
+    if (this.normalBackgroundMorph) {
+        this.normalBackgroundMorph.setIsDirty();
     }
+
+    if (this.highlightBackgroundMorph) {
+        this.highlightBackgroundMorph.setIsDirty();
+    }
+
+    if (this.pressBackgroundMorph) {
+        this.pressBackgroundMorph.setIsDirty();
+    }
+
+    // TODO: Try to be lazy about this?
+    this._updatePropertiesForTriggerMorph();
 };
 
-TriggerMorph.prototype.createBackgrounds = function () {
-    var context,
-        ext = this.extent();
+TriggerMorph.prototype._updatePropertiesForTriggerMorph = function () {
+    // Layout
 
-    this.normalImage = newCanvas(ext);
-    context = this.normalImage.getContext('2d');
-    context.fillStyle = this.color.toString();
-    context.fillRect(0, 0, ext.x, ext.y);
+    var pos = this.position(), ext = this.extent();
 
-    this.highlightImage = newCanvas(ext);
-    context = this.highlightImage.getContext('2d');
-    context.fillStyle = this.highlightColor.toString();
-    context.fillRect(0, 0, ext.x, ext.y);
+    if (this.normalBackgroundMorph) {
+        this.normalBackgroundMorph.setPosition(pos);
+        this.normalBackgroundMorph.setExtent(ext);
+    }
 
-    this.pressImage = newCanvas(ext);
-    context = this.pressImage.getContext('2d');
-    context.fillStyle = this.pressColor.toString();
-    context.fillRect(0, 0, ext.x, ext.y);
+    if (this.highlightBackgroundMorph) {
+        this.highlightBackgroundMorph.setPosition(pos);
+        this.highlightBackgroundMorph.setExtent(ext);
+    }
 
-    this.image = this.normalImage;
+    if (this.pressBackgroundMorph) {
+        this.pressBackgroundMorph.setPosition(pos);
+        this.pressBackgroundMorph.setExtent(ext);
+    }
+
+    this.createLabel();
 };
 
 TriggerMorph.prototype.createLabel = function () {
+    // Override in subclass for different behavior.
+
+    // TODO: More lazier way?
+
     if (this.label !== null) {
         this.label.destroy();
     }
+
     this.label = new StringMorph(
         this.labelString,
         this.fontSize,
@@ -10073,7 +10597,7 @@ TriggerMorph.prototype.triggerDoubleClick = function () {
 
 TriggerMorph.prototype.mouseEnter = function () {
     var contents = this.hint instanceof Function ? this.hint() : this.hint;
-    this.image = this.highlightImage;
+    this.setState(1);   // highlight state
     this.changed();
     if (contents) {
         this.bubbleHelp(contents);
@@ -10081,7 +10605,7 @@ TriggerMorph.prototype.mouseEnter = function () {
 };
 
 TriggerMorph.prototype.mouseLeave = function () {
-    this.image = this.normalImage;
+    this.setState(0);   // normal state
     this.changed();
     if (this.schedule) {
         this.schedule.isActive = false;
@@ -10092,12 +10616,12 @@ TriggerMorph.prototype.mouseLeave = function () {
 };
 
 TriggerMorph.prototype.mouseDownLeft = function () {
-    this.image = this.pressImage;
+    this.setState(2);   // press state
     this.changed();
 };
 
 TriggerMorph.prototype.mouseClickLeft = function () {
-    this.image = this.highlightImage;
+    this.setState(1);   // highlight state
     this.changed();
     this.trigger();
 };
@@ -10183,8 +10707,10 @@ function MenuItemMorph(
     );
 }
 
+// Override
 MenuItemMorph.prototype.createLabel = function () {
     var w, h;
+
     if (this.label) {
         this.label.destroy();
     }
@@ -10192,6 +10718,7 @@ MenuItemMorph.prototype.createLabel = function () {
     this.add(this.label);
     w = this.label.width();
     h = this.label.height();
+
     if (this.shortcut) {
         this.shortcut.destroy();
     }
@@ -10201,6 +10728,8 @@ MenuItemMorph.prototype.createLabel = function () {
         h = Math.max(h, this.shortcut.height());
         this.add(this.shortcut);
     }
+
+    // TODO: Move setting extent to somewhere else?
     this.silentSetExtent(new Point(w + 8, h));
     this.fixLayout();
 };
@@ -10222,7 +10751,7 @@ MenuItemMorph.prototype.createLabelPart = function (source) {
     }
     if (source instanceof Array) {
         // assume its pattern is: [icon, string]
-        part = new OldMorph();
+        part = new Morph();
         part.alpha = 0; // transparent
         icon = this.createIcon(source[0]);
         part.add(icon);
@@ -10231,7 +10760,7 @@ MenuItemMorph.prototype.createLabelPart = function (source) {
         lbl.setCenter(icon.center());
         lbl.setLeft(icon.right() + 4);
         part.bounds = (icon.bounds.merge(lbl.bounds));
-        part.drawNew();
+        part.setIsDirty();
         return part;
     }
     // assume it's either a Morph or a Canvas
@@ -10239,22 +10768,28 @@ MenuItemMorph.prototype.createLabelPart = function (source) {
 };
 
 MenuItemMorph.prototype.createIcon = function (source) {
+    // TODO: Maybe fix bad practice of drawing on raw image canvas
+    // instead of letting lazy redrawing do the work.
+
     // source can be either a Morph or an HTMLCanvasElement
-    var icon = new OldMorph(),
-        src;
-    icon.image = source instanceof Morph ? source.fullImage() : source;
+    var icon = new Morph(),
+        src,
+        fullImage;
+    icon.setImage(source instanceof Morph ? source.fullImage() : source);
     // adjust shadow dimensions
     if (source instanceof Morph && source.getShadow()) {
-        src = icon.image;
-        icon.image = newCanvas(
+        src = icon.getImage();
+
+        fullImage = newCanvas(
             source.fullBounds().extent().subtract(
                 this.shadowBlur * (useBlurredShadows ? 1 : 2)
             )
         );
-        icon.image.getContext('2d').drawImage(src, 0, 0);
+        fullImage.getContext('2d').drawImage(src, 0, 0);
+        icon.setImage(fullImage);
     }
-    icon.silentSetWidth(icon.image.width);
-    icon.silentSetHeight(icon.image.height);
+    icon.silentSetWidth(icon.getImage().width);
+    icon.silentSetHeight(icon.getImage().height);
     return icon;
 };
 
@@ -10281,7 +10816,7 @@ MenuItemMorph.prototype.mouseEnter = function () {
         menu.closeSubmenu();
     }
     if (!this.isListItem()) {
-        this.image = this.highlightImage;
+        this.setState(1);   // highlight state
         this.changed();
     }
     if (this.action instanceof MenuMorph) {
@@ -10294,9 +10829,9 @@ MenuItemMorph.prototype.mouseEnter = function () {
 MenuItemMorph.prototype.mouseLeave = function () {
     if (!this.isListItem()) {
         if (this.isShowingSubmenu()) {
-            this.image = this.highlightImage;
+            this.setState(1);   // highlight state
         } else {
-            this.image = this.normalImage;
+            this.setState(0);   // normal state
         }
         this.changed();
     }
@@ -10313,7 +10848,7 @@ MenuItemMorph.prototype.mouseDownLeft = function (pos) {
         this.parentThatIsA(MenuMorph).unselectAllItems();
         this.escalateEvent('mouseDownLeft', pos);
     }
-    this.image = this.pressImage;
+    this.setState(2);   // press state
     this.changed();
 };
 
@@ -10345,7 +10880,7 @@ MenuItemMorph.prototype.isListItem = function () {
 
 MenuItemMorph.prototype.isSelectedListItem = function () {
     if (this.isListItem()) {
-        return this.image === this.pressImage;
+        return this.getState() === 2;   // pressed state
     }
     return false;
 };
@@ -10377,7 +10912,7 @@ MenuItemMorph.prototype.delaySubmenu = function () {
 MenuItemMorph.prototype.popUpSubmenu = function () {
     var menu = this.parentThatIsA(MenuMorph);
     if (!(this.action instanceof MenuMorph)) {return; }
-    this.action.drawNew();
+    this.action.setIsDirty();   // was drawNew(). TODO: this code correct?
     this.action.setPosition(this.topRight().subtract(new Point(0, 5)));
     this.action.addShadow(new Point(2, 2), 80);
     this.action.keepWithin(this.world());
@@ -10394,9 +10929,9 @@ MenuItemMorph.prototype.popUpSubmenu = function () {
 
 // Frames inherit from Morph:
 
-FrameMorph.prototype = new OldMorph();
+FrameMorph.prototype = new Morph();
 FrameMorph.prototype.constructor = FrameMorph;
-FrameMorph.uber = OldMorph.prototype;
+FrameMorph.uber = Morph.prototype;
 
 function FrameMorph(aScrollFrame) {
     this.init(aScrollFrame);
@@ -10406,9 +10941,9 @@ FrameMorph.prototype.init = function (aScrollFrame) {
     // the scroll frame that this is the "contents" of, if it is
     this.scrollFrame = aScrollFrame || null;
 
-    FrameMorph.uber.init.call(this);
+    FrameMorph.uber.init.call(this, true);
     this.color = new Color(255, 250, 245);
-    this.drawNew();
+    //this.setIsDirty();
     this.acceptsDrops = true;
 
     if (this.scrollFrame) {
@@ -10428,7 +10963,7 @@ FrameMorph.prototype.fullBounds = function () {
 
 FrameMorph.prototype.fullImage = function () {
     // use only for shadows
-    return this.image;
+    return this.getImage();
 };
 
 FrameMorph.prototype.fullDrawOn = function (aCanvas, aRect) {
@@ -10527,7 +11062,7 @@ FrameMorph.prototype.adjustBounds = function () {
     }
     if (!this.bounds.eq(newBounds)) {
         this.bounds = newBounds;
-        this.drawNew();
+        this.setIsDirty();
         this.keepInScrollFrame();
     }
 
@@ -10665,7 +11200,7 @@ ScrollFrameMorph.prototype.adjustScrollBars = function () {
         this.hBar.size =
             this.width() / this.contents.width() * this.hBar.stop;
         this.hBar.value = this.left() - this.contents.left();
-        this.hBar.drawNew();
+        this.hBar.setIsDirty();
     } else {
         this.hBar.hide();
     }
@@ -10688,7 +11223,7 @@ ScrollFrameMorph.prototype.adjustScrollBars = function () {
         this.vBar.size =
             this.height() / this.contents.height() * this.vBar.stop;
         this.vBar.value = this.top() - this.contents.top();
-        this.vBar.drawNew();
+        this.vBar.setIsDirty();
     } else {
         this.vBar.hide();
     }
@@ -11069,7 +11604,7 @@ ListMorph.prototype.buildListContents = function () {
         );
     });
     this.listContents.isListContents = true;
-    this.listContents.drawNew();
+    this.listContents.setIsDirty();
     this.listContents.setPosition(this.contents.position());
     this.addContents(this.listContents);
 };
@@ -11105,7 +11640,7 @@ ListMorph.prototype.activeIndex = function () {
 ListMorph.prototype.activateIndex = function (idx) {
     var item = this.listContents.children[idx];
     if (!item) {return; }
-    item.image = item.pressImage;
+    item.setState(2);   // press state
     item.changed();
     item.trigger();
 };
@@ -11154,22 +11689,17 @@ StringFieldMorph.prototype.init = function (
     this.isBold = bold;
     this.isItalic = italic;
     this.isNumeric = isNumeric || false;
-    this.text = null;
+    this.text = null;   // a StringMorph
     StringFieldMorph.uber.init.call(this);
     this.color = new Color(255, 255, 255);
     this.isEditable = true;
     this.acceptsDrops = false;
-    this.drawNew();
+    this._addText();
+    this.setIsDirty();
 };
 
-StringFieldMorph.prototype.drawNew = function () {
-    var txt;
-    txt = this.text ? this.string() : this.defaultContents;
-    this.text = null;
-    this.children.forEach(function (child) {
-        child.destroy();
-    });
-    this.children = [];
+StringFieldMorph.prototype._addText = function () {
+    var txt = this.defaultContents;
     this.text = new StringMorph(
         txt,
         this.fontSize,
@@ -11184,14 +11714,27 @@ StringFieldMorph.prototype.drawNew = function () {
     this.text.isEditable = this.isEditable;
     this.text.isDraggable = false;
     this.text.enableSelecting();
+    this.add(this.text);
+};
+
+// Override
+StringFieldMorph.prototype.setIsDirty = function () {
+    // TODO: May want to try to be lazy about these changes.
+
+    // NOTE: Change extent BEFORE calling superclass method
+    // because the superclass method will use the extent!!!
+
     this.silentSetExtent(
         new Point(
             Math.max(this.width(), this.minWidth),
             this.text.height()
         )
     );
-    StringFieldMorph.uber.drawNew.call(this);
-    this.add(this.text);
+
+    // REMINDER: Only call superclass method
+    // AFTER the extent has been change
+    // because the superclass method will use the extent!!!
+    StringFieldMorph.uber.setIsDirty.call(this);
 };
 
 StringFieldMorph.prototype.string = function () {
@@ -11214,9 +11757,9 @@ var BouncerMorph;
 
 // Bouncers inherit from Morph:
 
-BouncerMorph.prototype = new OldMorph();
+BouncerMorph.prototype = new Morph();
 BouncerMorph.prototype.constructor = BouncerMorph;
-BouncerMorph.uber = OldMorph.prototype;
+BouncerMorph.uber = Morph.prototype;
 
 // BouncerMorph instance creation:
 
@@ -11227,7 +11770,7 @@ function BouncerMorph() {
 // BouncerMorph initialization:
 
 BouncerMorph.prototype.init = function (type, speed) {
-    BouncerMorph.uber.init.call(this);
+    BouncerMorph.uber.init.call(this, true);
     this.fps = 50;
 
     // additional properties:
@@ -11301,9 +11844,9 @@ BouncerMorph.prototype.step = function () {
 
 // HandMorph inherits from Morph:
 
-HandMorph.prototype = new OldMorph();
+HandMorph.prototype = new Morph();
 HandMorph.prototype.constructor = HandMorph;
-HandMorph.uber = OldMorph.prototype;
+HandMorph.uber = Morph.prototype;
 
 // HandMorph instance creation:
 
@@ -11948,7 +12491,7 @@ WorldMorph.prototype.init = function (aCanvas, fillPage) {
     this.color = new Color(205, 205, 205); // (130, 130, 130)
     this.alpha = 1;
     this.bounds = new Rectangle(0, 0, aCanvas.width, aCanvas.height);
-    this.drawNew();
+    this.setIsDirty();
     this.isVisible = true;
     this.isDraggable = false;
     this.currentKey = null; // currently pressed key code
@@ -12532,7 +13075,7 @@ WorldMorph.prototype.userCreateMorph = function () {
 
     menu = new MenuMorph(this, 'make a morph');
     menu.addItem('rectangle', function () {
-        create(new OldMorph());
+        create(new Morph());
     });
     menu.addItem('box', function () {
         create(new BoxMorph());
@@ -12589,7 +13132,7 @@ WorldMorph.prototype.userCreateMorph = function () {
         );
         newMorph.isEditable = true;
         newMorph.maxWidth = 300;
-        newMorph.drawNew();
+        newMorph.setIsDirty();
         create(newMorph);
     });
     menu.addItem('speech bubble', function () {
@@ -12780,11 +13323,11 @@ WorldMorph.prototype.slide = function (aStringOrTextMorph) {
     slider.button.pressColor.b += 150;
     slider.silentSetHeight(MorphicPreferences.scrollBarSize);
     slider.silentSetWidth(MorphicPreferences.menuFontSize * 10);
-    slider.drawNew();
+    slider.setIsDirty();
     slider.action = function (num) {
         aStringOrTextMorph.changed();
         aStringOrTextMorph.text = Math.round(num).toString();
-        aStringOrTextMorph.drawNew();
+        aStringOrTextMorph.setIsDirty();
         aStringOrTextMorph.changed();
         aStringOrTextMorph.escalateEvent(
             'reactToSliderEdit',
